@@ -25,7 +25,7 @@ interface PluginConfig {
 type PowerMode = "battery" | "plugged";
 
 let currentPowerMode: PowerMode = "plugged";
-let currentAppId: string = "default";
+let currentProfileKey: string = "default";
 let isApplyingProfile = false;
 let configCache: PluginConfig = { show_notifications: true };
 let lastAppliedHash = "";
@@ -95,6 +95,27 @@ function getSteamStores() {
   };
 }
 
+// Determines target profile based directly on QAM "Use per-game profile" toggle
+function getProfileTarget(): { key: string; isPerGame: boolean; appId: string } {
+  const stores = getSteamStores();
+  const ps = stores?.perfStore;
+  const currentApp = String(ps?.msgState?.current_game_id || "769");
+  const activeProfileApp = String(ps?.msgState?.active_profile_game_id || "769");
+
+  // Per-game profile is active in QAM when activeProfile matches currentGame and is not the home UI (769)
+  const isPerGameEnabled = (
+    currentApp !== "769" &&
+    Boolean(currentApp) &&
+    currentApp === activeProfileApp
+  );
+
+  return {
+    key: isPerGameEnabled ? currentApp : "default",
+    isPerGame: isPerGameEnabled,
+    appId: currentApp,
+  };
+}
+
 // Read current QAM settings
 function readCurrentQAMSettings(): PowerProfile | null {
   const stores = getSteamStores();
@@ -132,7 +153,7 @@ function showToast(title: string, body: string) {
 }
 
 // Apply profile to QAM / SteamClient
-async function applyProfile(profile: PowerProfile, mode: PowerMode) {
+async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: string) {
   const stores = getSteamStores();
   if (!stores?.perfStore) return;
 
@@ -169,8 +190,9 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode) {
     // Toast notification
     if (configCache.show_notifications) {
       const modeLabel = mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode";
+      const profileLabel = targetKey === "default" ? "Default" : "Per-Game";
       const tdpText = profile.is_tdp_limit_enabled ? `${profile.tdp_limit}W` : "TDP Auto";
-      const details = `${profile.display_refresh_manual_hz}Hz | ${profile.fps_limit}FPS | ${tdpText}`;
+      const details = `${profile.display_refresh_manual_hz}Hz | ${profile.fps_limit}FPS | ${tdpText} (${profileLabel})`;
       showToast(`PowerShift: ${modeLabel}`, details);
     }
   } catch (err) {
@@ -182,17 +204,22 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode) {
   }
 }
 
-async function onPowerModeChange(newMode: PowerMode) {
-  if (newMode === currentPowerMode) return;
-  currentPowerMode = newMode;
+async function triggerProfileSwitch(reason: string) {
+  const target = getProfileTarget();
+  currentProfileKey = target.key;
 
   try {
-    const res = await call<[string, string], { profile: PowerProfile }>("get_profile", currentAppId, newMode);
+    const res = await call<[string, string], { profile: PowerProfile }>(
+      "get_profile",
+      target.key,
+      currentPowerMode
+    );
+
     if (res?.profile) {
-      await applyProfile(res.profile, newMode);
+      await applyProfile(res.profile, currentPowerMode, target.key);
     }
   } catch (err) {
-    console.error("[PowerShift] Failed to fetch and apply profile on power change:", err);
+    console.error(`[PowerShift] Failed to apply profile on ${reason}:`, err);
   }
 }
 
@@ -210,9 +237,10 @@ function handleSettingsChange() {
   clearTimeout(saveDebounceTimer);
   saveDebounceTimer = setTimeout(async () => {
     if (isApplyingProfile) return;
+    const target = getProfileTarget();
     try {
       lastAppliedHash = currentHash;
-      await call("save_profile", currentAppId, currentPowerMode, current);
+      await call("save_profile", target.key, currentPowerMode, current);
     } catch (err) {
       console.error("[PowerShift] Failed to auto-save profile:", err);
     }
@@ -223,7 +251,7 @@ function handleSettingsChange() {
 const Content: FC = () => {
   const [showNotifications, setShowNotifications] = useState(configCache.show_notifications);
   const [activeMode, setActiveMode] = useState<PowerMode>(currentPowerMode);
-  const [activeApp, setActiveApp] = useState<string>(currentAppId);
+  const [targetInfo, setTargetInfo] = useState(getProfileTarget());
 
   useEffect(() => {
     call<[], PluginConfig>("get_config").then((res: PluginConfig) => {
@@ -235,7 +263,7 @@ const Content: FC = () => {
 
     const interval = setInterval(() => {
       setActiveMode(currentPowerMode);
-      setActiveApp(currentAppId);
+      setTargetInfo(getProfileTarget());
     }, 1000);
 
     return () => clearInterval(interval);
@@ -255,8 +283,8 @@ const Content: FC = () => {
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
-        <Field label="Active Profile">
-          {activeApp === "default" || activeApp === "769" ? "Default Profile" : `Game AppID: ${activeApp}`}
+        <Field label="QAM Profile Mode">
+          {targetInfo.isPerGame ? `Per-Game (ID: ${targetInfo.appId})` : "Default (Per-Game disabled)"}
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
@@ -281,62 +309,48 @@ export default definePlugin(() => {
     }
   });
 
-  // Initial power detection via Battery API
+  // Battery detection via Battery API
   const nav = navigator as any;
   if (nav.getBattery) {
     nav.getBattery().then((battery: any) => {
       currentPowerMode = battery.charging ? "plugged" : "battery";
       battery.addEventListener("chargingchange", () => {
-        onPowerModeChange(battery.charging ? "plugged" : "battery");
+        const newMode: PowerMode = battery.charging ? "plugged" : "battery";
+        if (newMode !== currentPowerMode) {
+          currentPowerMode = newMode;
+          triggerProfileSwitch("battery API event");
+        }
       });
     });
   }
 
-  // Also listen via SteamClient battery state changes
+  // Also listen via SteamClient native battery state changes
   let unregisterBattery: any = null;
   if ((window as any).SteamClient?.System?.RegisterForBatteryStateChanges) {
     unregisterBattery = (window as any).SteamClient.System.RegisterForBatteryStateChanges(
       (batteryState: any) => {
         if (batteryState?.eACState !== undefined) {
-          onPowerModeChange(batteryState.eACState === 2 ? "plugged" : "battery");
-        }
-      }
-    );
-  }
-
-  // Watch app lifetime / active running game
-  let unregisterAppLifetime: any = null;
-  if ((window as any).SteamClient?.GameSessions?.RegisterForAppLifetimeNotifications) {
-    unregisterAppLifetime = (window as any).SteamClient.GameSessions.RegisterForAppLifetimeNotifications(
-      async (appLifetime: any) => {
-        if (appLifetime?.bRunning && appLifetime?.unAppID) {
-          const newAppId = String(appLifetime.unAppID);
-          if (newAppId !== currentAppId) {
-            currentAppId = newAppId;
-            const res = await call<[string, string], { profile: PowerProfile }>("get_profile", currentAppId, currentPowerMode);
-            if (res?.profile) {
-              await applyProfile(res.profile, currentPowerMode);
-            }
+          const newMode: PowerMode = batteryState.eACState === 2 ? "plugged" : "battery";
+          if (newMode !== currentPowerMode) {
+            currentPowerMode = newMode;
+            triggerProfileSwitch("SteamClient AC state change");
           }
-        } else if (!appLifetime?.bRunning) {
-          currentAppId = "default";
         }
       }
     );
   }
 
-  // Periodic check on active profile/game in perfStore
-  const pollStoresInterval = setInterval(() => {
-    const stores = getSteamStores();
-    if (stores?.perfStore) {
-      const activeGame = stores.perfStore.msgState?.active_profile_game_id || stores.perfStore.msgState?.current_game_id;
-      if (activeGame && activeGame !== "769" && activeGame !== currentAppId) {
-        currentAppId = String(activeGame);
-      }
+  // Watch QAM "Use per-game profile" toggle changes
+  let lastTargetKey = getProfileTarget().key;
+  const pollTargetInterval = setInterval(() => {
+    const currentTarget = getProfileTarget();
+    if (currentTarget.key !== lastTargetKey) {
+      lastTargetKey = currentTarget.key;
+      triggerProfileSwitch("QAM per-game profile toggle");
     }
-  }, 2000);
+  }, 1000);
 
-  // Hook setting changes to persist manual adjustments
+  // Hook setting adjustments to persist manual changes
   const settingsWatchInterval = setInterval(() => {
     handleSettingsChange();
   }, 1500);
@@ -348,8 +362,7 @@ export default definePlugin(() => {
     icon: <BoltIcon />,
     onDismount() {
       if (unregisterBattery?.unregister) unregisterBattery.unregister();
-      if (unregisterAppLifetime?.unregister) unregisterAppLifetime.unregister();
-      clearInterval(pollStoresInterval);
+      clearInterval(pollTargetInterval);
       clearInterval(settingsWatchInterval);
     },
   };

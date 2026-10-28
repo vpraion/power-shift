@@ -1,0 +1,10 @@
+{
+  "name": "PowerShift",
+  "author": "vpraion",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["performance", "battery", "profiles"],
+    "description": "Automatic per-game battery and plugged performance profiles for Steam Deck"
+  }
+}

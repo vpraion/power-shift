@@ -55,30 +55,44 @@ class Plugin:
         except Exception:
             return False
 
+    async def get_power_mode(self, *args, **kwargs):
+        """
+        Direct hardware query via sysfs ACAD/online (1 = plugged, 0 = battery).
+        """
+        acad = Path("/sys/class/power_supply/ACAD/online")
+        if acad.exists():
+            try:
+                val = acad.read_text().strip()
+                return "plugged" if val == "1" else "battery"
+            except Exception:
+                pass
+        return "plugged"
+
     async def apply_gamescope_settings(self, *args, **kwargs):
         """
-        Directly enforces Gamescope FPS limit and refresh rate on the X11 root window.
+        Directly enforces Gamescope FPS limit and refresh rate on all active Xwayland displays (:0 and :1).
         """
         unpacked = _unpack_args(args)
         fps_limit = unpacked[0] if len(unpacked) > 0 else kwargs.get("fps_limit", 0)
         refresh_hz = unpacked[1] if len(unpacked) > 1 else kwargs.get("refresh_hz", 90)
         try:
-            env = dict(os.environ, DISPLAY=":0")
             fps = int(fps_limit)
             hz = int(refresh_hz)
-            subprocess.run(
-                ["xprop", "-root", "-f", "GAMESCOPE_FPS_LIMIT", "32c", "-set", "GAMESCOPE_FPS_LIMIT", str(fps)],
-                env=env,
-                capture_output=True,
-                check=False
-            )
-            if hz > 0:
+            for disp in (":0", ":1"):
+                env = dict(os.environ, DISPLAY=disp)
                 subprocess.run(
-                    ["xprop", "-root", "-f", "GAMESCOPE_DYNAMIC_REFRESH", "32c", "-set", "GAMESCOPE_DYNAMIC_REFRESH", str(hz)],
+                    ["xprop", "-root", "-f", "GAMESCOPE_FPS_LIMIT", "32c", "-set", "GAMESCOPE_FPS_LIMIT", str(fps)],
                     env=env,
                     capture_output=True,
                     check=False
                 )
+                if hz > 0:
+                    subprocess.run(
+                        ["xprop", "-root", "-f", "GAMESCOPE_DYNAMIC_REFRESH", "32c", "-set", "GAMESCOPE_DYNAMIC_REFRESH", str(hz)],
+                        env=env,
+                        capture_output=True,
+                        check=False
+                    )
             return True
         except Exception:
             return False

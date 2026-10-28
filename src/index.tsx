@@ -123,9 +123,10 @@ function readCurrentQAMSettings(): PowerProfile | null {
   const ss = stores.settingsStore;
   const perApp = ps.msgSettingsPerApp || {};
   const fps = Number(perApp.fps_limit ?? 0);
+  const isFpsEnabled = perApp.is_fps_limit_enabled !== undefined ? Boolean(perApp.is_fps_limit_enabled) : fps > 0;
 
   return {
-    is_fps_limit_enabled: fps > 0,
+    is_fps_limit_enabled: isFpsEnabled,
     fps_limit: fps,
     display_refresh_manual_hz: Number(perApp.display_refresh_manual_hz || 90),
     is_tdp_limit_enabled: Boolean(ss.steamos_tdp_limit_enabled),
@@ -156,7 +157,6 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
   const stores = getSteamStores();
   if (!stores?.perfStore) return;
 
-  isApplyingProfile = true;
   lastAppliedHash = JSON.stringify(profile);
 
   try {
@@ -166,22 +166,24 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
     const fpsLimit = profile.is_fps_limit_enabled === false ? 0 : Number(profile.fps_limit ?? 0);
     const refreshHz = Number(profile.display_refresh_manual_hz || 90);
 
-    // 1. Update Steam internal PerfStore methods so QAM UI updates its state
-    if (typeof ps.SetDisplayRefreshRateManualHz === "function") {
+    // 1. Only manage refresh rate if device allows it (LCD models). On OLED, refresh rate is externally managed.
+    if (!ps.msgLimits?.disable_refresh_rate_management && typeof ps.SetDisplayRefreshRateManualHz === "function") {
       ps.SetDisplayRefreshRateManualHz(false, refreshHz);
     }
-    if (typeof ps.SetFPSLimit === "function") {
-      ps.SetFPSLimit(false, fpsLimit);
-    }
 
-    // 2. Send atomic protobuf delta to ensure SteamClient state is persisted
-    if (typeof ps.CreateSettingsUpdateRequest === "function") {
-      const up = ps.CreateSettingsUpdateRequest();
-      const delta = up.settings_delta().per_app(true);
-      delta.set_fps_limit(fpsLimit);
-      delta.set_display_refresh_manual_hz(refreshHz);
-      const serialized = up.serializeBase64String();
-      (window as any).SteamClient?.System?.Perf?.UpdateSettings(serialized);
+    // 2. Set FPS limit via native PerfStore
+    if (typeof ps.SetFPSLimit === "function") {
+      if (fpsLimit > 0) {
+        if (typeof ps.SetFPSLimitEnabled === "function") {
+          ps.SetFPSLimitEnabled(true);
+        }
+        ps.SetFPSLimit(false, fpsLimit);
+      } else {
+        ps.SetFPSLimit(false, 0);
+        if (typeof ps.SetFPSLimitEnabled === "function") {
+          ps.SetFPSLimitEnabled(false);
+        }
+      }
     }
 
     // 3. Enforce directly to Gamescope compositor via Python backend (guarantees in-game application)
@@ -210,14 +212,13 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
     }
   } catch (err) {
     console.error("[PowerShift] Error applying profile:", err);
-  } finally {
-    setTimeout(() => {
-      isApplyingProfile = false;
-    }, 2000);
   }
 }
 
 async function triggerProfileSwitch(reason: string) {
+  isApplyingProfile = true;
+  clearTimeout(saveDebounceTimer);
+
   const target = getProfileTarget();
 
   try {
@@ -239,6 +240,14 @@ async function triggerProfileSwitch(reason: string) {
     }
   } catch (err) {
     console.error(`[PowerShift] Failed to apply profile on ${reason}:`, err);
+  } finally {
+    setTimeout(() => {
+      const current = readCurrentQAMSettings();
+      if (current) {
+        lastAppliedHash = JSON.stringify(current);
+      }
+      isApplyingProfile = false;
+    }, 1500);
   }
 }
 
@@ -320,6 +329,11 @@ const Content: FC = () => {
 
 const BoltIcon = FaBolt as any;
 
+function isACConnected(eACState: number | undefined): boolean {
+  // k_EACState_Connected = 2, k_EACState_ConnectedSlow = 3
+  return eACState === 2 || eACState === 3;
+}
+
 export default definePlugin(() => {
   // Load initial config
   call<[], PluginConfig>("get_config").then((res: PluginConfig) => {
@@ -328,28 +342,20 @@ export default definePlugin(() => {
     }
   });
 
-  // Battery detection via Battery API
-  const nav = navigator as any;
-  if (nav.getBattery) {
-    nav.getBattery().then((battery: any) => {
-      currentPowerMode = battery.charging ? "plugged" : "battery";
-      battery.addEventListener("chargingchange", () => {
-        const newMode: PowerMode = battery.charging ? "plugged" : "battery";
-        if (newMode !== currentPowerMode) {
-          currentPowerMode = newMode;
-          triggerProfileSwitch("battery API event");
-        }
-      });
-    });
-  }
+  // Initialize initial power mode from direct hardware query
+  call<[], PowerMode>("get_power_mode").then((mode: PowerMode) => {
+    if (mode) {
+      currentPowerMode = mode;
+    }
+  });
 
-  // Also listen via SteamClient native battery state changes
+  // Listen via SteamClient native battery state changes
   let unregisterBattery: any = null;
   if ((window as any).SteamClient?.System?.RegisterForBatteryStateChanges) {
     unregisterBattery = (window as any).SteamClient.System.RegisterForBatteryStateChanges(
       (batteryState: any) => {
         if (batteryState?.eACState !== undefined) {
-          const newMode: PowerMode = batteryState.eACState === 2 ? "plugged" : "battery";
+          const newMode: PowerMode = isACConnected(batteryState.eACState) ? "plugged" : "battery";
           if (newMode !== currentPowerMode) {
             currentPowerMode = newMode;
             triggerProfileSwitch("SteamClient AC state change");
@@ -358,6 +364,18 @@ export default definePlugin(() => {
       }
     );
   }
+
+  // Periodic heartbeat watching SystemPowerStore to guarantee zero missed transitions
+  const powerWatchInterval = setInterval(() => {
+    const acState = (window as any).SystemPowerStore?.m_eACState;
+    if (acState !== undefined) {
+      const detectedMode: PowerMode = isACConnected(acState) ? "plugged" : "battery";
+      if (detectedMode !== currentPowerMode) {
+        currentPowerMode = detectedMode;
+        triggerProfileSwitch("SystemPowerStore heartbeat");
+      }
+    }
+  }, 1500);
 
   // Watch QAM "Use per-game profile" toggle changes
   let lastTargetKey = getProfileTarget().key;
@@ -381,6 +399,7 @@ export default definePlugin(() => {
     icon: <BoltIcon />,
     onDismount() {
       if (unregisterBattery?.unregister) unregisterBattery.unregister();
+      clearInterval(powerWatchInterval);
       clearInterval(pollTargetInterval);
       clearInterval(settingsWatchInterval);
     },

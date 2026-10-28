@@ -14,6 +14,12 @@ def _ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _unpack_args(args):
+    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+        return list(args[0])
+    return list(args)
+
+
 class Plugin:
     async def _main(self):
         _ensure_dir(CONFIG_DIR / "default")
@@ -27,7 +33,7 @@ class Plugin:
     async def _unload(self):
         pass
 
-    async def get_config(self):
+    async def get_config(self, *args, **kwargs):
         cfg_file = CONFIG_DIR / "config.json"
         if cfg_file.exists():
             try:
@@ -37,7 +43,9 @@ class Plugin:
                 pass
         return DEFAULT_CONFIG
 
-    async def set_config(self, config: dict):
+    async def set_config(self, *args, **kwargs):
+        unpacked = _unpack_args(args)
+        config = unpacked[0] if len(unpacked) > 0 else kwargs.get("config", {})
         cfg_file = CONFIG_DIR / "config.json"
         _ensure_dir(CONFIG_DIR)
         try:
@@ -47,10 +55,13 @@ class Plugin:
         except Exception:
             return False
 
-    async def apply_gamescope_settings(self, fps_limit: int, refresh_hz: int):
+    async def apply_gamescope_settings(self, *args, **kwargs):
         """
         Directly enforces Gamescope FPS limit and refresh rate on the X11 root window.
         """
+        unpacked = _unpack_args(args)
+        fps_limit = unpacked[0] if len(unpacked) > 0 else kwargs.get("fps_limit", 0)
+        refresh_hz = unpacked[1] if len(unpacked) > 1 else kwargs.get("refresh_hz", 90)
         try:
             env = dict(os.environ, DISPLAY=":0")
             fps = int(fps_limit)
@@ -72,11 +83,14 @@ class Plugin:
         except Exception:
             return False
 
-    async def get_profile(self, app_id: str, mode: str):
+    async def get_profile(self, *args, **kwargs):
         """
         Retrieves profile for a target key ('default' or numeric game app_id) and mode ('battery' | 'plugged').
         Returns exists: True/False so the frontend can snapshot current QAM values if missing.
         """
+        unpacked = _unpack_args(args)
+        app_id = str(unpacked[0]) if len(unpacked) > 0 else str(kwargs.get("app_id", "default"))
+        mode = str(unpacked[1]) if len(unpacked) > 1 else str(kwargs.get("mode", "battery"))
         mode_file = f"{mode}.json"
         if app_id and app_id != "default" and app_id != "769":
             game_file = CONFIG_DIR / "games" / str(app_id) / mode_file
@@ -98,10 +112,14 @@ class Plugin:
 
         return {"exists": False, "profile": None}
 
-    async def save_profile(self, app_id: str, mode: str, profile: dict):
+    async def save_profile(self, *args, **kwargs):
         """
         Saves profile data directly to games/<app_id>/<mode>.json or default/<mode>.json.
         """
+        unpacked = _unpack_args(args)
+        app_id = str(unpacked[0]) if len(unpacked) > 0 else str(kwargs.get("app_id", "default"))
+        mode = str(unpacked[1]) if len(unpacked) > 1 else str(kwargs.get("mode", "battery"))
+        profile = unpacked[2] if len(unpacked) > 2 else kwargs.get("profile", {})
         mode_file = f"{mode}.json"
         if app_id and app_id != "default" and app_id != "769":
             target_dir = CONFIG_DIR / "games" / str(app_id)

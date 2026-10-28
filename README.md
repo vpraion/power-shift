@@ -1,5 +1,9 @@
 # PowerShift ⚡🔋
 
+[![Latest Release](https://img.shields.io/github/v/release/vpraion/power-shift?color=green&style=flat-square)](https://github.com/vpraion/power-shift/releases)
+[![Downloads](https://img.shields.io/github/downloads/vpraion/power-shift/total?color=blue&logo=github&style=flat-square)](https://github.com/vpraion/power-shift/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+
 **PowerShift** is a lightweight Decky Loader plugin for Steam Deck that automatically switches performance profiles (TDP limit, Framerate cap, GPU clock) between **Battery** and **Plugged-in (AC)** modes.
 
 > [!NOTE]

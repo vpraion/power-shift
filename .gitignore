@@ -1,6 +1,8 @@
 node_modules/
 dist/
 build/
+out/
+*.zip
 *.pyc
 __pycache__/
 .cache/

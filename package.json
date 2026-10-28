@@ -1,6 +1,6 @@
 {
   "name": "power-shift",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "description": "Automatic per-game battery and plugged performance profiles for Steam Deck",
   "author": "vpraion",
   "license": "MIT",
@@ -8,6 +8,7 @@
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
+    "package": "python3 scripts/package.py",
     "prepare": "husky"
   },
   "devDependencies": {
@@ -18,10 +19,13 @@
     "@rollup/plugin-json": "^6.1.0",
     "@rollup/plugin-node-resolve": "^15.3.1",
     "@rollup/plugin-typescript": "^11.1.6",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^11.0.1",
     "@types/react": "18.2.0",
     "@types/react-dom": "18.2.0",
     "husky": "^9.1.7",
     "rollup": "^4.65.1",
+    "semantic-release": "^25.0.9",
     "typescript": "^5.9.3"
   },
   "dependencies": {

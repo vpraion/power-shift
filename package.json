@@ -1,6 +1,6 @@
 {
   "name": "power-shift",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "packageManager": "pnpm@12.15.0",
   "description": "Automatic per-game battery and plugged performance profiles for Steam Deck",
   "author": "vpraion",

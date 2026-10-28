@@ -8,7 +8,6 @@
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
-    "deploy": "pnpm build && rsync -avz --exclude 'node_modules' --exclude '.git' ./ deck@steam-deck.vini.home.arpa:/home/deck/homebrew/plugins/PowerShift/",
     "prepare": "husky"
   },
   "devDependencies": {

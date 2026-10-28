@@ -4,6 +4,8 @@ import {
   PanelSectionRow,
   ToggleField,
   Field,
+  SliderField,
+  DropdownItem,
 } from "@decky/ui";
 import { useEffect, useState, FC } from "react";
 import { FaBolt } from "react-icons/fa";
@@ -25,7 +27,6 @@ interface PluginConfig {
 type PowerMode = "battery" | "plugged";
 
 let currentPowerMode: PowerMode = "plugged";
-let currentProfileKey: string = "default";
 let isApplyingProfile = false;
 let configCache: PluginConfig = { show_notifications: true };
 let lastAppliedHash = "";
@@ -102,7 +103,6 @@ function getProfileTarget(): { key: string; isPerGame: boolean; appId: string } 
   const currentApp = String(ps?.msgState?.current_game_id || "769");
   const activeProfileApp = String(ps?.msgState?.active_profile_game_id || "769");
 
-  // Per-game profile is active in QAM when activeProfile matches currentGame and is not the home UI (769)
   const isPerGameEnabled = (
     currentApp !== "769" &&
     Boolean(currentApp) &&
@@ -192,7 +192,8 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
       const modeLabel = mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode";
       const profileLabel = targetKey === "default" ? "Default" : "Per-Game";
       const tdpText = profile.is_tdp_limit_enabled ? `${profile.tdp_limit}W` : "TDP Auto";
-      const details = `${profile.display_refresh_manual_hz}Hz | ${profile.fps_limit}FPS | ${tdpText} (${profileLabel})`;
+      const fpsText = profile.is_fps_limit_enabled ? `${profile.fps_limit}FPS` : "Unlimited FPS";
+      const details = `${profile.display_refresh_manual_hz}Hz | ${fpsText} | ${tdpText} (${profileLabel})`;
       showToast(`PowerShift: ${modeLabel}`, details);
     }
   } catch (err) {
@@ -206,7 +207,6 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
 
 async function triggerProfileSwitch(reason: string) {
   const target = getProfileTarget();
-  currentProfileKey = target.key;
 
   try {
     const res = await call<[string, string], { profile: PowerProfile }>(
@@ -253,6 +253,24 @@ const Content: FC = () => {
   const [activeMode, setActiveMode] = useState<PowerMode>(currentPowerMode);
   const [targetInfo, setTargetInfo] = useState(getProfileTarget());
 
+  // Editing Default Profiles
+  const [editMode, setEditMode] = useState<PowerMode>("battery");
+  const [profileState, setProfileState] = useState<PowerProfile>({
+    is_fps_limit_enabled: true,
+    fps_limit: 45,
+    display_refresh_manual_hz: 90,
+    is_tdp_limit_enabled: true,
+    tdp_limit: 11,
+  });
+
+  const loadDefaultProfile = (mode: PowerMode) => {
+    call<[string, string], { profile: PowerProfile }>("get_profile", "default", mode).then((res) => {
+      if (res?.profile) {
+        setProfileState(res.profile);
+      }
+    });
+  };
+
   useEffect(() => {
     call<[], PluginConfig>("get_config").then((res: PluginConfig) => {
       if (res) {
@@ -261,6 +279,8 @@ const Content: FC = () => {
       }
     });
 
+    loadDefaultProfile(editMode);
+
     const interval = setInterval(() => {
       setActiveMode(currentPowerMode);
       setTargetInfo(getProfileTarget());
@@ -268,6 +288,24 @@ const Content: FC = () => {
 
     return () => clearInterval(interval);
   }, []);
+
+  const handleEditModeChange = (newMode: PowerMode) => {
+    setEditMode(newMode);
+    loadDefaultProfile(newMode);
+  };
+
+  const updateProfileField = async (updatedFields: Partial<PowerProfile>) => {
+    const newProfile = { ...profileState, ...updatedFields };
+    setProfileState(newProfile);
+
+    // Save to default profile
+    await call("save_profile", "default", editMode, newProfile);
+
+    // If we're currently in this mode and not using a custom per-game profile, apply immediately
+    if (editMode === currentPowerMode && !targetInfo.isPerGame) {
+      await applyProfile(newProfile, currentPowerMode, "default");
+    }
+  };
 
   const handleToggleNotifications = async (val: boolean) => {
     setShowNotifications(val);
@@ -278,23 +316,103 @@ const Content: FC = () => {
   return (
     <PanelSection title="PowerShift">
       <PanelSectionRow>
-        <Field label="Power Source">
+        <Field label="Current Status">
           {activeMode === "plugged" ? "⚡ Plugged" : "🔋 On Battery"}
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
-        <Field label="QAM Profile Mode">
-          {targetInfo.isPerGame ? `Per-Game (ID: ${targetInfo.appId})` : "Default (Per-Game disabled)"}
+        <Field label="QAM Profile Target">
+          {targetInfo.isPerGame ? `Per-Game (ID: ${targetInfo.appId})` : "Default Profile"}
         </Field>
       </PanelSectionRow>
-      <PanelSectionRow>
-        <ToggleField
-          label="Popup Notifications"
-          description="Display a toast when switching between battery and plugged"
-          checked={showNotifications}
-          onChange={handleToggleNotifications}
-        />
-      </PanelSectionRow>
+
+      <PanelSection title="Configure Default Profiles">
+        <PanelSectionRow>
+          <DropdownItem
+            label="Configure Mode"
+            menuLabel="Select Power Mode"
+            rgOptions={[
+              { data: "battery", label: "🔋 Battery Mode" },
+              { data: "plugged", label: "⚡ Plugged Mode" },
+            ]}
+            selectedOption={editMode}
+            onChange={(opt) => handleEditModeChange(opt.data as PowerMode)}
+          />
+        </PanelSectionRow>
+
+        {/* TDP Control */}
+        <PanelSectionRow>
+          <ToggleField
+            label="TDP Limit"
+            description="Enable manual TDP limitation"
+            checked={profileState.is_tdp_limit_enabled}
+            onChange={(val) => updateProfileField({ is_tdp_limit_enabled: val })}
+          />
+        </PanelSectionRow>
+        {profileState.is_tdp_limit_enabled && (
+          <PanelSectionRow>
+            <SliderField
+              label="TDP Limit Value"
+              value={profileState.tdp_limit}
+              min={3}
+              max={15}
+              step={1}
+              showValue={true}
+              valueSuffix=" W"
+              onChange={(val) => updateProfileField({ tdp_limit: val })}
+            />
+          </PanelSectionRow>
+        )}
+
+        {/* Framerate & Refresh Rate Controls */}
+        <PanelSectionRow>
+          <ToggleField
+            label="Framerate Limit"
+            description="Toggle between frame limit and unlimited refresh rate"
+            checked={profileState.is_fps_limit_enabled}
+            onChange={(val) => updateProfileField({ is_fps_limit_enabled: val })}
+          />
+        </PanelSectionRow>
+
+        {profileState.is_fps_limit_enabled ? (
+          <PanelSectionRow>
+            <SliderField
+              label="Framerate Limit"
+              value={profileState.fps_limit}
+              min={30}
+              max={90}
+              step={5}
+              showValue={true}
+              valueSuffix=" FPS"
+              onChange={(val) => updateProfileField({ fps_limit: val })}
+            />
+          </PanelSectionRow>
+        ) : (
+          <PanelSectionRow>
+            <SliderField
+              label="Display Refresh Rate"
+              value={profileState.display_refresh_manual_hz}
+              min={45}
+              max={90}
+              step={1}
+              showValue={true}
+              valueSuffix=" Hz"
+              onChange={(val) => updateProfileField({ display_refresh_manual_hz: val })}
+            />
+          </PanelSectionRow>
+        )}
+      </PanelSection>
+
+      <PanelSection title="Settings">
+        <PanelSectionRow>
+          <ToggleField
+            label="Popup Notifications"
+            description="Display a toast when switching between battery and plugged"
+            checked={showNotifications}
+            onChange={handleToggleNotifications}
+          />
+        </PanelSectionRow>
+      </PanelSection>
     </PanelSection>
   );
 };

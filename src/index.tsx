@@ -121,9 +121,9 @@ function readCurrentQAMSettings(): PowerProfile | null {
 
   const ss = stores.settingsStore;
   const fps = Number(ss.gamescope_app_target_framerate ?? 0);
-  const isFpsEnabled = ss.gamescope_enable_app_target_framerate !== undefined
-    ? Boolean(ss.gamescope_enable_app_target_framerate && !ss.gamescope_disable_framelimit)
-    : fps > 0;
+  const isFpsEnabled = ss.gamescope_disable_framelimit !== undefined
+    ? !ss.gamescope_disable_framelimit
+    : (ss.gamescope_enable_app_target_framerate !== undefined ? Boolean(ss.gamescope_enable_app_target_framerate) : fps > 0);
 
   return {
     is_fps_limit_enabled: isFpsEnabled,
@@ -170,13 +170,13 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
 
   try {
     // 1. Framerate limit via native clientSettings (same store as TDP)
+    // gamescope_enable_app_target_framerate MUST remain true to prevent QAM from reverting to legacy 2-slider UI
+    setSetting("gamescope_enable_app_target_framerate", true);
     if (fpsLimit > 0) {
       setSetting("gamescope_app_target_framerate", fpsLimit);
-      setSetting("gamescope_enable_app_target_framerate", true);
       setSetting("gamescope_disable_framelimit", false);
     } else {
       setSetting("gamescope_disable_framelimit", true);
-      setSetting("gamescope_enable_app_target_framerate", false);
     }
 
     // 2. TDP limit & GPU clock via native clientSettings

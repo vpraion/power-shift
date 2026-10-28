@@ -28,6 +28,7 @@ let currentPowerMode: PowerMode = "plugged";
 let currentAppId: string = "default";
 let isApplyingProfile = false;
 let configCache: PluginConfig = { show_notifications: true };
+let lastAppliedHash = "";
 
 // Webpack store references
 let perfStoreRef: any = null;
@@ -114,25 +115,43 @@ function readCurrentQAMSettings(): PowerProfile | null {
   };
 }
 
+function showToast(title: string, body: string) {
+  try {
+    if (toaster && typeof toaster.toast === "function") {
+      toaster.toast({ title, body });
+      return;
+    }
+  } catch (_) {}
+
+  try {
+    const deckyToaster = (window as any).DeckyPluginLoader?.toaster;
+    if (deckyToaster && typeof deckyToaster.toast === "function") {
+      deckyToaster.toast({ title, body });
+    }
+  } catch (_) {}
+}
+
 // Apply profile to QAM / SteamClient
 async function applyProfile(profile: PowerProfile, mode: PowerMode) {
   const stores = getSteamStores();
   if (!stores?.perfStore) return;
 
   isApplyingProfile = true;
+  lastAppliedHash = JSON.stringify(profile);
+
   try {
     const ps = stores.perfStore;
     const setSetting = stores.setSetting;
 
-    // Apply framerate limit & refresh rate
+    // Apply framerate limit & refresh rate (first param: false = internal screen)
     if (typeof ps.SetFPSLimitEnabled === "function") {
       ps.SetFPSLimitEnabled(profile.is_fps_limit_enabled);
     }
     if (typeof ps.SetFPSLimit === "function") {
-      ps.SetFPSLimit(profile.fps_limit);
+      ps.SetFPSLimit(false, profile.fps_limit);
     }
     if (typeof ps.SetDisplayRefreshRateManualHz === "function") {
-      ps.SetDisplayRefreshRateManualHz(profile.display_refresh_manual_hz);
+      ps.SetDisplayRefreshRateManualHz(false, profile.display_refresh_manual_hz);
     }
 
     // Apply TDP limit & GPU clock
@@ -149,41 +168,58 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode) {
 
     // Toast notification
     if (configCache.show_notifications) {
-      const modeLabel = mode === "plugged" ? "⚡ Secteur" : "🔋 Batterie";
-      const details = `${profile.display_refresh_manual_hz}Hz | ${profile.fps_limit}FPS | ${profile.is_tdp_limit_enabled ? profile.tdp_limit + "W" : "TDP Auto"}`;
-      toaster.toast({
-        title: `PowerShift : Profil ${modeLabel}`,
-        body: details,
-      });
+      const modeLabel = mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode";
+      const tdpText = profile.is_tdp_limit_enabled ? `${profile.tdp_limit}W` : "TDP Auto";
+      const details = `${profile.display_refresh_manual_hz}Hz | ${profile.fps_limit}FPS | ${tdpText}`;
+      showToast(`PowerShift: ${modeLabel}`, details);
     }
   } catch (err) {
     console.error("[PowerShift] Error applying profile:", err);
   } finally {
     setTimeout(() => {
       isApplyingProfile = false;
-    }, 700);
+    }, 2500);
   }
 }
 
-// Save current settings to active profile
+async function onPowerModeChange(newMode: PowerMode) {
+  if (newMode === currentPowerMode) return;
+  currentPowerMode = newMode;
+
+  try {
+    const res = await call<[string, string], { profile: PowerProfile }>("get_profile", currentAppId, newMode);
+    if (res?.profile) {
+      await applyProfile(res.profile, newMode);
+    }
+  } catch (err) {
+    console.error("[PowerShift] Failed to fetch and apply profile on power change:", err);
+  }
+}
+
+// Auto-save manual slider adjustments
 let saveDebounceTimer: any = null;
 function handleSettingsChange() {
   if (isApplyingProfile) return;
 
+  const current = readCurrentQAMSettings();
+  if (!current) return;
+
+  const currentHash = JSON.stringify(current);
+  if (currentHash === lastAppliedHash) return;
+
   clearTimeout(saveDebounceTimer);
   saveDebounceTimer = setTimeout(async () => {
-    const current = readCurrentQAMSettings();
-    if (!current) return;
-
+    if (isApplyingProfile) return;
     try {
+      lastAppliedHash = currentHash;
       await call("save_profile", currentAppId, currentPowerMode, current);
     } catch (err) {
       console.error("[PowerShift] Failed to auto-save profile:", err);
     }
-  }, 800);
+  }, 1000);
 }
 
-// React Panel UI
+// React Panel UI in English
 const Content: FC = () => {
   const [showNotifications, setShowNotifications] = useState(configCache.show_notifications);
   const [activeMode, setActiveMode] = useState<PowerMode>(currentPowerMode);
@@ -214,19 +250,19 @@ const Content: FC = () => {
   return (
     <PanelSection title="PowerShift">
       <PanelSectionRow>
-        <Field label="Alimentation actuelle">
-          {activeMode === "plugged" ? "⚡ Secteur" : "🔋 Batterie"}
+        <Field label="Power Source">
+          {activeMode === "plugged" ? "⚡ Plugged" : "🔋 On Battery"}
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
-        <Field label="Jeu actif">
-          {activeApp === "default" || activeApp === "769" ? "Profil par défaut" : `AppID : ${activeApp}`}
+        <Field label="Active Profile">
+          {activeApp === "default" || activeApp === "769" ? "Default Profile" : `Game AppID: ${activeApp}`}
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
         <ToggleField
-          label="Notifications popup"
-          description="Affiche un toast à chaque basculement batterie / secteur"
+          label="Popup Notifications"
+          description="Display a toast when switching between battery and plugged"
           checked={showNotifications}
           onChange={handleToggleNotifications}
         />
@@ -245,27 +281,30 @@ export default definePlugin(() => {
     }
   });
 
-  // Watch power state changes natively via SteamClient
+  // Initial power detection via Battery API
+  const nav = navigator as any;
+  if (nav.getBattery) {
+    nav.getBattery().then((battery: any) => {
+      currentPowerMode = battery.charging ? "plugged" : "battery";
+      battery.addEventListener("chargingchange", () => {
+        onPowerModeChange(battery.charging ? "plugged" : "battery");
+      });
+    });
+  }
+
+  // Also listen via SteamClient battery state changes
   let unregisterBattery: any = null;
   if ((window as any).SteamClient?.System?.RegisterForBatteryStateChanges) {
     unregisterBattery = (window as any).SteamClient.System.RegisterForBatteryStateChanges(
-      async (batteryState: any) => {
-        const newMode: PowerMode = batteryState.eACState === 2 ? "plugged" : "battery";
-
-        if (newMode !== currentPowerMode) {
-          currentPowerMode = newMode;
-          // Fetch profile and apply
-          const res = await call<[string, string], { profile: PowerProfile }>("get_profile", currentAppId, newMode);
-
-          if (res?.profile) {
-            await applyProfile(res.profile, newMode);
-          }
+      (batteryState: any) => {
+        if (batteryState?.eACState !== undefined) {
+          onPowerModeChange(batteryState.eACState === 2 ? "plugged" : "battery");
         }
       }
     );
   }
 
-  // Watch app lifetime / current running game
+  // Watch app lifetime / active running game
   let unregisterAppLifetime: any = null;
   if ((window as any).SteamClient?.GameSessions?.RegisterForAppLifetimeNotifications) {
     unregisterAppLifetime = (window as any).SteamClient.GameSessions.RegisterForAppLifetimeNotifications(
@@ -274,7 +313,6 @@ export default definePlugin(() => {
           const newAppId = String(appLifetime.unAppID);
           if (newAppId !== currentAppId) {
             currentAppId = newAppId;
-            // Fetch profile for new game in current mode
             const res = await call<[string, string], { profile: PowerProfile }>("get_profile", currentAppId, currentPowerMode);
             if (res?.profile) {
               await applyProfile(res.profile, currentPowerMode);
@@ -300,9 +338,7 @@ export default definePlugin(() => {
 
   // Hook setting changes to persist manual adjustments
   const settingsWatchInterval = setInterval(() => {
-    if (!isApplyingProfile) {
-      handleSettingsChange();
-    }
+    handleSettingsChange();
   }, 1500);
 
   return {

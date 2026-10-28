@@ -117,18 +117,18 @@ function getProfileTarget(): { key: string; isPerGame: boolean; appId: string } 
 // Read current QAM settings
 function readCurrentQAMSettings(): PowerProfile | null {
   const stores = getSteamStores();
-  if (!stores?.perfStore || !stores?.settingsStore) return null;
+  if (!stores?.settingsStore) return null;
 
-  const ps = stores.perfStore;
   const ss = stores.settingsStore;
-  const perApp = ps.msgSettingsPerApp || {};
-  const fps = Number(perApp.fps_limit ?? 0);
-  const isFpsEnabled = perApp.is_fps_limit_enabled !== undefined ? Boolean(perApp.is_fps_limit_enabled) : fps > 0;
+  const fps = Number(ss.gamescope_app_target_framerate ?? 0);
+  const isFpsEnabled = ss.gamescope_enable_app_target_framerate !== undefined
+    ? Boolean(ss.gamescope_enable_app_target_framerate && !ss.gamescope_disable_framelimit)
+    : fps > 0;
 
   return {
     is_fps_limit_enabled: isFpsEnabled,
     fps_limit: fps,
-    display_refresh_manual_hz: Number(perApp.display_refresh_manual_hz || 90),
+    display_refresh_manual_hz: Number(ss.gamescope_display_refresh_rate || 90),
     is_tdp_limit_enabled: Boolean(ss.steamos_tdp_limit_enabled),
     tdp_limit: Number(ss.steamos_tdp_limit || 15),
     is_manual_gpu_clock_enabled: Boolean(ss.steamos_manual_gpu_clock_enabled),
@@ -136,7 +136,15 @@ function readCurrentQAMSettings(): PowerProfile | null {
   };
 }
 
+let lastToastTime = 0;
+
 function showToast(title: string, body: string) {
+  const now = Date.now();
+  if (now - lastToastTime < 3000) {
+    return;
+  }
+  lastToastTime = now;
+
   try {
     if (toaster && typeof toaster.toast === "function") {
       toaster.toast({ title, body });
@@ -152,70 +160,58 @@ function showToast(title: string, body: string) {
   } catch (_) {}
 }
 
-// Apply profile atomically to QAM / SteamClient and Gamescope
-async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: string) {
+// Apply profile atomically via native clientSettings
+async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: string, isPowerTransition: boolean) {
   const stores = getSteamStores();
-  if (!stores?.perfStore) return;
+  if (!stores?.setSetting) return;
 
-  lastAppliedHash = JSON.stringify(profile);
+  const setSetting = stores.setSetting;
+  const fpsLimit = profile.is_fps_limit_enabled === false ? 0 : Number(profile.fps_limit ?? 0);
 
   try {
-    const ps = stores.perfStore;
-    const setSetting = stores.setSetting;
-
-    const fpsLimit = profile.is_fps_limit_enabled === false ? 0 : Number(profile.fps_limit ?? 0);
-    const refreshHz = Number(profile.display_refresh_manual_hz || 90);
-
-    // 1. Only manage refresh rate if device allows it (LCD models). On OLED, refresh rate is externally managed.
-    if (!ps.msgLimits?.disable_refresh_rate_management && typeof ps.SetDisplayRefreshRateManualHz === "function") {
-      ps.SetDisplayRefreshRateManualHz(false, refreshHz);
+    // 1. Framerate limit via native clientSettings (same store as TDP)
+    if (fpsLimit > 0) {
+      setSetting("gamescope_app_target_framerate", fpsLimit);
+      setSetting("gamescope_enable_app_target_framerate", true);
+      setSetting("gamescope_disable_framelimit", false);
+    } else {
+      setSetting("gamescope_disable_framelimit", true);
+      setSetting("gamescope_enable_app_target_framerate", false);
     }
 
-    // 2. Set FPS limit via native PerfStore
-    if (typeof ps.SetFPSLimit === "function") {
-      if (fpsLimit > 0) {
-        if (typeof ps.SetFPSLimitEnabled === "function") {
-          ps.SetFPSLimitEnabled(true);
-        }
-        ps.SetFPSLimit(false, fpsLimit);
-      } else {
-        ps.SetFPSLimit(false, 0);
-        if (typeof ps.SetFPSLimitEnabled === "function") {
-          ps.SetFPSLimitEnabled(false);
-        }
-      }
+    // 2. TDP limit & GPU clock via native clientSettings
+    setSetting("steamos_tdp_limit_enabled", Boolean(profile.is_tdp_limit_enabled));
+    setSetting("steamos_tdp_limit", Number(profile.tdp_limit));
+    if (profile.is_manual_gpu_clock_enabled !== undefined) {
+      setSetting("steamos_manual_gpu_clock_enabled", profile.is_manual_gpu_clock_enabled);
+    }
+    if (profile.manual_gpu_clock_hz !== undefined) {
+      setSetting("steamos_manual_gpu_clock_hz", profile.manual_gpu_clock_hz);
     }
 
-    // 3. Enforce directly to Gamescope compositor via Python backend (guarantees in-game application)
-    await call("apply_gamescope_settings", fpsLimit, refreshHz);
-
-    // 4. Apply TDP limit & GPU clock via SettingsStore
-    if (setSetting) {
-      setSetting("steamos_tdp_limit_enabled", Boolean(profile.is_tdp_limit_enabled));
-      setSetting("steamos_tdp_limit", Number(profile.tdp_limit));
-      if (profile.is_manual_gpu_clock_enabled !== undefined) {
-        setSetting("steamos_manual_gpu_clock_enabled", profile.is_manual_gpu_clock_enabled);
+    // 3. Toast notification: ONLY on true battery/plugged transitions and if enabled in config
+    if (isPowerTransition) {
+      const cfg = await call<[], PluginConfig>("get_config").catch(() => null);
+      const shouldNotify = cfg ? cfg.show_notifications : configCache.show_notifications;
+      if (shouldNotify) {
+        const modeLabel = mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode";
+        const profileLabel = targetKey === "default" ? "Default" : "Per-Game";
+        const tdpText = profile.is_tdp_limit_enabled ? `${profile.tdp_limit}W` : "TDP Auto";
+        const fpsText = fpsLimit > 0 ? `${fpsLimit}FPS` : "Unlimited FPS";
+        const details = `${fpsText} | ${tdpText} (${profileLabel})`;
+        showToast(`PowerShift: ${modeLabel}`, details);
       }
-      if (profile.manual_gpu_clock_hz !== undefined) {
-        setSetting("steamos_manual_gpu_clock_hz", profile.manual_gpu_clock_hz);
-      }
-    }
-
-    // 5. Toast notification
-    if (configCache.show_notifications) {
-      const modeLabel = mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode";
-      const profileLabel = targetKey === "default" ? "Default" : "Per-Game";
-      const tdpText = profile.is_tdp_limit_enabled ? `${profile.tdp_limit}W` : "TDP Auto";
-      const fpsText = fpsLimit > 0 ? `${fpsLimit}FPS` : "Unlimited FPS";
-      const details = `${refreshHz}Hz | ${fpsText} | ${tdpText} (${profileLabel})`;
-      showToast(`PowerShift: ${modeLabel}`, details);
     }
   } catch (err) {
     console.error("[PowerShift] Error applying profile:", err);
   }
 }
 
-async function triggerProfileSwitch(reason: string) {
+let isSwitchingProfile = false;
+
+async function triggerProfileSwitch(newMode: PowerMode, reason: string, isPowerTransition: boolean) {
+  if (isSwitchingProfile) return;
+  isSwitchingProfile = true;
   isApplyingProfile = true;
   clearTimeout(saveDebounceTimer);
 
@@ -225,19 +221,19 @@ async function triggerProfileSwitch(reason: string) {
     const res = await call<[string, string], { exists: boolean; profile: PowerProfile | null }>(
       "get_profile",
       target.key,
-      currentPowerMode
+      newMode
     );
 
     if (res?.exists && res.profile) {
-      await applyProfile(res.profile, currentPowerMode, target.key);
+      await applyProfile(res.profile, newMode, target.key, isPowerTransition);
     } else {
       // Profile file doesn't exist yet: snapshot current QAM values!
       const current = readCurrentQAMSettings();
       if (current) {
-        await call("save_profile", target.key, currentPowerMode, current);
-        lastAppliedHash = JSON.stringify(current);
+        await call("save_profile", target.key, newMode, current);
       }
     }
+    currentPowerMode = newMode;
   } catch (err) {
     console.error(`[PowerShift] Failed to apply profile on ${reason}:`, err);
   } finally {
@@ -247,6 +243,7 @@ async function triggerProfileSwitch(reason: string) {
         lastAppliedHash = JSON.stringify(current);
       }
       isApplyingProfile = false;
+      isSwitchingProfile = false;
     }, 1500);
   }
 }
@@ -357,8 +354,7 @@ export default definePlugin(() => {
         if (batteryState?.eACState !== undefined) {
           const newMode: PowerMode = isACConnected(batteryState.eACState) ? "plugged" : "battery";
           if (newMode !== currentPowerMode) {
-            currentPowerMode = newMode;
-            triggerProfileSwitch("SteamClient AC state change");
+            triggerProfileSwitch(newMode, "SteamClient AC state change", true);
           }
         }
       }
@@ -371,8 +367,7 @@ export default definePlugin(() => {
     if (acState !== undefined) {
       const detectedMode: PowerMode = isACConnected(acState) ? "plugged" : "battery";
       if (detectedMode !== currentPowerMode) {
-        currentPowerMode = detectedMode;
-        triggerProfileSwitch("SystemPowerStore heartbeat");
+        triggerProfileSwitch(detectedMode, "SystemPowerStore heartbeat", true);
       }
     }
   }, 1500);
@@ -383,7 +378,7 @@ export default definePlugin(() => {
     const currentTarget = getProfileTarget();
     if (currentTarget.key !== lastTargetKey) {
       lastTargetKey = currentTarget.key;
-      triggerProfileSwitch("QAM per-game profile toggle");
+      triggerProfileSwitch(currentPowerMode, "QAM per-game profile toggle", false);
     }
   }, 1000);
 

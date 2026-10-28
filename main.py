@@ -1,6 +1,4 @@
 import json
-import os
-import subprocess
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "power-shift"
@@ -68,35 +66,6 @@ class Plugin:
                 pass
         return "plugged"
 
-    async def apply_gamescope_settings(self, *args, **kwargs):
-        """
-        Directly enforces Gamescope FPS limit and refresh rate on all active Xwayland displays (:0 and :1).
-        """
-        unpacked = _unpack_args(args)
-        fps_limit = unpacked[0] if len(unpacked) > 0 else kwargs.get("fps_limit", 0)
-        refresh_hz = unpacked[1] if len(unpacked) > 1 else kwargs.get("refresh_hz", 90)
-        try:
-            fps = int(fps_limit)
-            hz = int(refresh_hz)
-            for disp in (":0", ":1"):
-                env = dict(os.environ, DISPLAY=disp)
-                subprocess.run(
-                    ["xprop", "-root", "-f", "GAMESCOPE_FPS_LIMIT", "32c", "-set", "GAMESCOPE_FPS_LIMIT", str(fps)],
-                    env=env,
-                    capture_output=True,
-                    check=False
-                )
-                if hz > 0:
-                    subprocess.run(
-                        ["xprop", "-root", "-f", "GAMESCOPE_DYNAMIC_REFRESH", "32c", "-set", "GAMESCOPE_DYNAMIC_REFRESH", str(hz)],
-                        env=env,
-                        capture_output=True,
-                        check=False
-                    )
-            return True
-        except Exception:
-            return False
-
     async def get_profile(self, *args, **kwargs):
         """
         Retrieves profile for a target key ('default' or numeric game app_id) and mode ('battery' | 'plugged').
@@ -114,8 +83,6 @@ class Plugin:
                         return {"exists": True, "profile": json.load(f)}
                 except Exception:
                     pass
-
-        # Check default profile file
         default_file = CONFIG_DIR / "default" / mode_file
         if default_file.exists():
             try:
@@ -123,27 +90,24 @@ class Plugin:
                     return {"exists": True, "profile": json.load(f)}
             except Exception:
                 pass
-
         return {"exists": False, "profile": None}
 
     async def save_profile(self, *args, **kwargs):
         """
-        Saves profile data directly to games/<app_id>/<mode>.json or default/<mode>.json.
+        Persists profile dictionary for a target key ('default' or numeric game app_id) and mode.
         """
         unpacked = _unpack_args(args)
         app_id = str(unpacked[0]) if len(unpacked) > 0 else str(kwargs.get("app_id", "default"))
         mode = str(unpacked[1]) if len(unpacked) > 1 else str(kwargs.get("mode", "battery"))
         profile = unpacked[2] if len(unpacked) > 2 else kwargs.get("profile", {})
-        mode_file = f"{mode}.json"
-        if app_id and app_id != "default" and app_id != "769":
-            target_dir = CONFIG_DIR / "games" / str(app_id)
-        else:
-            target_dir = CONFIG_DIR / "default"
 
+        mode_file = f"{mode}.json"
+        target_dir = (CONFIG_DIR / "games" / str(app_id)) if (app_id and app_id != "default" and app_id != "769") else (CONFIG_DIR / "default")
         _ensure_dir(target_dir)
-        target_file = target_dir / mode_file
+
+        file_path = target_dir / mode_file
         try:
-            with open(target_file, "w", encoding="utf-8") as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(profile, f, indent=2)
             return True
         except Exception:

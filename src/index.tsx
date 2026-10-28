@@ -98,8 +98,8 @@ function getSteamStores() {
 function getProfileTarget(): { key: string; isPerGame: boolean; appId: string } {
   const stores = getSteamStores();
   const ps = stores?.perfStore;
-  const currentApp = String(ps?.msgState?.current_game_id || "769");
-  const activeProfileApp = String(ps?.msgState?.active_profile_game_id || "769");
+  const currentApp = String(ps?.nCurrentGameID || ps?.msgState?.current_game_id || "769");
+  const activeProfileApp = String(ps?.nActiveProfileGameID || ps?.msgState?.active_profile_game_id || "769");
 
   const isPerGameEnabled = (
     currentApp !== "769" &&
@@ -122,11 +122,12 @@ function readCurrentQAMSettings(): PowerProfile | null {
   const ps = stores.perfStore;
   const ss = stores.settingsStore;
   const perApp = ps.msgSettingsPerApp || {};
+  const fps = Number(perApp.fps_limit ?? 0);
 
   return {
-    is_fps_limit_enabled: Boolean(perApp.is_fps_limit_enabled),
-    fps_limit: Number(perApp.fps_limit || 60),
-    display_refresh_manual_hz: Number(perApp.display_refresh_manual_hz || 60),
+    is_fps_limit_enabled: fps > 0,
+    fps_limit: fps,
+    display_refresh_manual_hz: Number(perApp.display_refresh_manual_hz || 90),
     is_tdp_limit_enabled: Boolean(ss.steamos_tdp_limit_enabled),
     tdp_limit: Number(ss.steamos_tdp_limit || 15),
     is_manual_gpu_clock_enabled: Boolean(ss.steamos_manual_gpu_clock_enabled),
@@ -150,7 +151,7 @@ function showToast(title: string, body: string) {
   } catch (_) {}
 }
 
-// Apply profile atomically to QAM / SteamClient
+// Apply profile atomically to QAM / SteamClient and Gamescope
 async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: string) {
   const stores = getSteamStores();
   if (!stores?.perfStore) return;
@@ -162,18 +163,31 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
     const ps = stores.perfStore;
     const setSetting = stores.setSetting;
 
-    // Atomic Protobuf update for Gamescope framerate limit & refresh rate
+    const fpsLimit = profile.is_fps_limit_enabled === false ? 0 : Number(profile.fps_limit ?? 0);
+    const refreshHz = Number(profile.display_refresh_manual_hz || 90);
+
+    // 1. Update Steam internal PerfStore methods so QAM UI updates its state
+    if (typeof ps.SetDisplayRefreshRateManualHz === "function") {
+      ps.SetDisplayRefreshRateManualHz(false, refreshHz);
+    }
+    if (typeof ps.SetFPSLimit === "function") {
+      ps.SetFPSLimit(false, fpsLimit);
+    }
+
+    // 2. Send atomic protobuf delta to ensure SteamClient state is persisted
     if (typeof ps.CreateSettingsUpdateRequest === "function") {
       const up = ps.CreateSettingsUpdateRequest();
       const delta = up.settings_delta().per_app(true);
-      delta.set_is_fps_limit_enabled(Boolean(profile.is_fps_limit_enabled));
-      delta.set_fps_limit(Number(profile.fps_limit));
-      delta.set_display_refresh_manual_hz(Number(profile.display_refresh_manual_hz));
+      delta.set_fps_limit(fpsLimit);
+      delta.set_display_refresh_manual_hz(refreshHz);
       const serialized = up.serializeBase64String();
       (window as any).SteamClient?.System?.Perf?.UpdateSettings(serialized);
     }
 
-    // Apply TDP limit & GPU clock via SettingsStore
+    // 3. Enforce directly to Gamescope compositor via Python backend (guarantees in-game application)
+    await call("apply_gamescope_settings", fpsLimit, refreshHz);
+
+    // 4. Apply TDP limit & GPU clock via SettingsStore
     if (setSetting) {
       setSetting("steamos_tdp_limit_enabled", Boolean(profile.is_tdp_limit_enabled));
       setSetting("steamos_tdp_limit", Number(profile.tdp_limit));
@@ -185,13 +199,13 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
       }
     }
 
-    // Toast notification
+    // 5. Toast notification
     if (configCache.show_notifications) {
       const modeLabel = mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode";
       const profileLabel = targetKey === "default" ? "Default" : "Per-Game";
       const tdpText = profile.is_tdp_limit_enabled ? `${profile.tdp_limit}W` : "TDP Auto";
-      const fpsText = profile.is_fps_limit_enabled ? `${profile.fps_limit}FPS` : "Unlimited FPS";
-      const details = `${profile.display_refresh_manual_hz}Hz | ${fpsText} | ${tdpText} (${profileLabel})`;
+      const fpsText = fpsLimit > 0 ? `${fpsLimit}FPS` : "Unlimited FPS";
+      const details = `${refreshHz}Hz | ${fpsText} | ${tdpText} (${profileLabel})`;
       showToast(`PowerShift: ${modeLabel}`, details);
     }
   } catch (err) {

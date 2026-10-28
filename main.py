@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "power-shift"
@@ -41,6 +43,31 @@ class Plugin:
         try:
             with open(cfg_file, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+    async def apply_gamescope_settings(self, fps_limit: int, refresh_hz: int):
+        """
+        Directly enforces Gamescope FPS limit and refresh rate on the X11 root window.
+        """
+        try:
+            env = dict(os.environ, DISPLAY=":0")
+            fps = int(fps_limit)
+            hz = int(refresh_hz)
+            subprocess.run(
+                ["xprop", "-root", "-f", "GAMESCOPE_FPS_LIMIT", "32c", "-set", "GAMESCOPE_FPS_LIMIT", str(fps)],
+                env=env,
+                capture_output=True,
+                check=False
+            )
+            if hz > 0:
+                subprocess.run(
+                    ["xprop", "-root", "-f", "GAMESCOPE_DYNAMIC_REFRESH", "32c", "-set", "GAMESCOPE_DYNAMIC_REFRESH", str(hz)],
+                    env=env,
+                    capture_output=True,
+                    check=False
+                )
             return True
         except Exception:
             return False

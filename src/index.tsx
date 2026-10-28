@@ -326,11 +326,6 @@ const Content: FC = () => {
 
 const BoltIcon = FaBolt as any;
 
-function isACConnected(eACState: number | undefined): boolean {
-  // k_EACState_Connected = 2, k_EACState_ConnectedSlow = 3
-  return eACState === 2 || eACState === 3;
-}
-
 export default definePlugin(() => {
   // Load initial config
   call<[], PluginConfig>("get_config").then((res: PluginConfig) => {
@@ -339,38 +334,30 @@ export default definePlugin(() => {
     }
   });
 
-  // Initialize initial power mode from direct hardware query
-  call<[], PowerMode>("get_power_mode").then((mode: PowerMode) => {
-    if (mode) {
-      currentPowerMode = mode;
-    }
-  });
-
-  // Listen via SteamClient native battery state changes
-  let unregisterBattery: any = null;
-  if ((window as any).SteamClient?.System?.RegisterForBatteryStateChanges) {
-    unregisterBattery = (window as any).SteamClient.System.RegisterForBatteryStateChanges(
-      (batteryState: any) => {
-        if (batteryState?.eACState !== undefined) {
-          const newMode: PowerMode = isACConnected(batteryState.eACState) ? "plugged" : "battery";
-          if (newMode !== currentPowerMode) {
-            triggerProfileSwitch(newMode, "SteamClient AC state change", true);
-          }
-        }
+  async function checkHardwarePowerMode(reason: string) {
+    try {
+      const detectedMode = await call<[], PowerMode>("get_power_mode");
+      if (detectedMode && detectedMode !== currentPowerMode) {
+        triggerProfileSwitch(detectedMode, reason, true);
       }
-    );
+    } catch (_) {}
   }
 
-  // Periodic heartbeat watching SystemPowerStore to guarantee zero missed transitions
+  // Initialize initial power mode from direct hardware query
+  checkHardwarePowerMode("Initial hardware query");
+
+  // Listen via SteamClient native battery state changes as trigger for rechecking hardware
+  let unregisterBattery: any = null;
+  if ((window as any).SteamClient?.System?.RegisterForBatteryStateChanges) {
+    unregisterBattery = (window as any).SteamClient.System.RegisterForBatteryStateChanges(() => {
+      checkHardwarePowerMode("SteamClient battery event");
+    });
+  }
+
+  // Periodic heartbeat watching hardware sysfs directly to guarantee zero missed transitions
   const powerWatchInterval = setInterval(() => {
-    const acState = (window as any).SystemPowerStore?.m_eACState;
-    if (acState !== undefined) {
-      const detectedMode: PowerMode = isACConnected(acState) ? "plugged" : "battery";
-      if (detectedMode !== currentPowerMode) {
-        triggerProfileSwitch(detectedMode, "SystemPowerStore heartbeat", true);
-      }
-    }
-  }, 1500);
+    checkHardwarePowerMode("Hardware sysfs heartbeat");
+  }, 1000);
 
   // Watch QAM "Use per-game profile" toggle changes
   let lastTargetKey = getProfileTarget().key;

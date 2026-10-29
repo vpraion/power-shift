@@ -26,6 +26,7 @@ def main():
     # 2. Release files
     files_to_copy = [
         "main.py",
+        "devices.py",
         "package.json",
         "plugin.json",
         "README.md",

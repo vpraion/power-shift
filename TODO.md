@@ -11,7 +11,7 @@ This document tracks planned improvements and broader hardware compatibility tar
 - [ ] Dynamically query the device's native max refresh rate bounds (`display_refresh_manual_hz_max` from `PerfStore.msgLimits`) rather than using any hardcoded 90 Hz fallback.
 
 ### 2. Multi-Device Power Supply Discovery
-- [ ] Support non-standard AC adapter sysfs names (`ACAD`, `AC`, `ADP1`) for third-party handhelds running SteamOS-like distros (Bazzite, ChimeraOS on ROG Ally, Legion Go, etc.).
+- [x] Support non-standard AC adapter sysfs names (`ACAD`, `AC`, `ADP1`) across any available `Mains` or `USB` power supply in `/sys/class/power_supply/`.
 - [ ] Ensure dynamic TDP bounds beyond 15 W (e.g. up to 30 W on Z1 Extreme handhelds) are captured and restored accurately from native QAM.
 
 ---

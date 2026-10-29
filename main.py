@@ -55,13 +55,24 @@ class Plugin:
 
     async def get_power_mode(self, *args, **kwargs):
         """
-        Direct hardware query via sysfs ACAD/online (1 = plugged, 0 = battery).
+        Direct hardware query via sysfs across any available Mains or USB power supply.
+        Supports Steam Deck (LCD/OLED) and other handhelds running SteamOS/Bazzite.
         """
-        acad = Path("/sys/class/power_supply/ACAD/online")
-        if acad.exists():
+        base = Path("/sys/class/power_supply")
+        if base.exists():
+            has_supply = False
             try:
-                val = acad.read_text().strip()
-                return "plugged" if val == "1" else "battery"
+                for entry in base.iterdir():
+                    type_file = entry / "type"
+                    online_file = entry / "online"
+                    if online_file.exists() and type_file.exists():
+                        has_supply = True
+                        stype = type_file.read_text().strip()
+                        if stype in ("Mains", "USB"):
+                            if online_file.read_text().strip() == "1":
+                                return "plugged"
+                if has_supply:
+                    return "battery"
             except Exception:
                 pass
         return "plugged"

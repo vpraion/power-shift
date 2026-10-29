@@ -51,17 +51,9 @@ export function readCurrentQAMSettings(): PowerProfile | null {
     limits?.steamos_tdp_limit_default ??
     limits?.steamos_tdp_limit_max;
 
-  if (isTdpEnabled && (tdp === undefined || tdp === null)) {
-    showErrorToast("steamos_tdp_limit", "QAM hardware");
-  }
-
   const isGpuManual = Boolean(ss.steamos_manual_gpu_clock_enabled);
   const gpuHz = ss.steamos_manual_gpu_clock_hz ??
     limits?.steamos_manual_gpu_clock_hz_max;
-
-  if (isGpuManual && (gpuHz === undefined || gpuHz === null)) {
-    showErrorToast("steamos_manual_gpu_clock_hz", "QAM hardware");
-  }
 
   const profile: PowerProfile = {
     is_fps_limit_enabled: isFpsEnabled,

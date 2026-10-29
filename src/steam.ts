@@ -85,3 +85,16 @@ export function getProfileTarget(): ProfileTarget {
     appId: currentApp,
   };
 }
+
+export function getQuickAccessWindow(): Window | null {
+  try {
+    const focusNav = (window as any).GamepadNavTree?.m_context?.m_controller || (window as any).FocusNavController;
+    const context = focusNav?.m_ActiveContext || focusNav?.m_LastActiveContext;
+    const trees = context?.m_rgGamepadNavigationTrees;
+    return (
+      trees?.find((tree: any) => tree?.id === "QuickAccess-NA")?.m_Root?.m_element?.ownerDocument?.defaultView ?? null
+    );
+  } catch (_) {
+    return null;
+  }
+}

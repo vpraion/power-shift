@@ -1,13 +1,12 @@
 import { toaster } from "@decky/api";
 
-let lastToastTime = 0;
-
 export function showToast(title: string, body: string) {
+  const win = window as any;
   const now = Date.now();
-  if (now - lastToastTime < 3000) {
+  if (win.__powershift_lastToastTime && now - win.__powershift_lastToastTime < 2500) {
     return;
   }
-  lastToastTime = now;
+  win.__powershift_lastToastTime = now;
 
   try {
     if (toaster && typeof toaster.toast === "function") {

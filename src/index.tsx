@@ -13,6 +13,13 @@ import { Content } from "./components/Content";
 const BoltIcon = FaBolt as any;
 
 export default definePlugin(() => {
+  // Terminate any previous instance timers/listeners left behind during hot-reload
+  if (typeof (window as any).__powershift_cleanup === "function") {
+    try {
+      (window as any).__powershift_cleanup();
+    } catch (_) {}
+  }
+
   // Load initial config
   call<[], PluginConfig>("get_config").then((res: PluginConfig) => {
     if (res) {
@@ -31,14 +38,6 @@ export default definePlugin(() => {
 
   // Initialize initial power mode from direct hardware query
   checkHardwarePowerMode("Initial hardware query");
-
-  // Listen via SteamClient native battery state changes as trigger for rechecking hardware
-  let unregisterBattery: any = null;
-  if ((window as any).SteamClient?.System?.RegisterForBatteryStateChanges) {
-    unregisterBattery = (window as any).SteamClient.System.RegisterForBatteryStateChanges(() => {
-      checkHardwarePowerMode("SteamClient battery event");
-    });
-  }
 
   // Periodic heartbeat watching hardware sysfs directly to guarantee zero missed transitions
   const powerWatchInterval = setInterval(() => {
@@ -60,16 +59,22 @@ export default definePlugin(() => {
     handleSettingsChange();
   }, 1500);
 
+  const cleanup = () => {
+    clearInterval(powerWatchInterval);
+    clearInterval(pollTargetInterval);
+    clearInterval(settingsWatchInterval);
+    delete (window as any).__powershift_cleanup;
+  };
+
+  (window as any).__powershift_cleanup = cleanup;
+
   return {
     name: "PowerShift",
     title: <div className="powershift-title">PowerShift</div>,
     content: <Content />,
     icon: <BoltIcon />,
     onDismount() {
-      if (unregisterBattery?.unregister) unregisterBattery.unregister();
-      clearInterval(powerWatchInterval);
-      clearInterval(pollTargetInterval);
-      clearInterval(settingsWatchInterval);
+      cleanup();
     },
   };
 });

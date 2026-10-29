@@ -42,12 +42,6 @@ class Plugin:
     async def _unload(self):
         pass
 
-    async def get_device_info(self, *args, **kwargs):
-        """Returns hardware device information resolved polymorphically."""
-        return {
-            "name": self.device.name,
-        }
-
     async def get_config(self, *args, **kwargs):
         cfg_file = CONFIG_DIR / "config.json"
         if cfg_file.exists():

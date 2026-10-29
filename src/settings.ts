@@ -156,6 +156,8 @@ export async function triggerProfileSwitch(newMode: PowerMode, reason: string, i
   isApplyingProfile = true;
   clearTimeout(saveDebounceTimer);
 
+  const previousMode = currentPowerMode;
+  currentPowerMode = newMode;
   const target = getProfileTarget();
 
   try {
@@ -174,9 +176,9 @@ export async function triggerProfileSwitch(newMode: PowerMode, reason: string, i
         await call("save_profile", target.key, newMode, current);
       }
     }
-    currentPowerMode = newMode;
   } catch (err) {
     console.error(`[PowerShift] Failed to apply profile on ${reason}:`, err);
+    currentPowerMode = previousMode;
   } finally {
     setTimeout(() => {
       const current = readCurrentQAMSettings();

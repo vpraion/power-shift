@@ -12,9 +12,9 @@ import packageJson from "../package.json";
 interface PowerProfile {
   is_fps_limit_enabled: boolean;
   fps_limit: number;
-  display_refresh_manual_hz: number;
-  is_tdp_limit_enabled: boolean;
-  tdp_limit: number;
+  display_refresh_manual_hz?: number;
+  is_tdp_limit_enabled?: boolean;
+  tdp_limit?: number;
   is_manual_gpu_clock_enabled?: boolean;
   manual_gpu_clock_hz?: number;
 }
@@ -23,7 +23,7 @@ interface PluginConfig {
   show_notifications: boolean;
 }
 
-type PowerMode = "battery" | "plugged";
+type PowerMode = "battery" | "plugged" | "docked";
 
 let currentPowerMode: PowerMode = "plugged";
 let isApplyingProfile = false;
@@ -115,32 +115,6 @@ function getProfileTarget(): { key: string; isPerGame: boolean; appId: string } 
   };
 }
 
-// Read current QAM settings
-function readCurrentQAMSettings(): PowerProfile | null {
-  const stores = getSteamStores();
-  if (!stores?.settingsStore) return null;
-
-  const ss = stores.settingsStore;
-  const fps = Number(ss.gamescope_app_target_framerate ?? 0);
-  const isFpsEnabled = ss.gamescope_disable_framelimit !== undefined
-    ? !ss.gamescope_disable_framelimit
-    : (ss.gamescope_enable_app_target_framerate !== undefined ? Boolean(ss.gamescope_enable_app_target_framerate) : fps > 0);
-
-  return {
-    is_fps_limit_enabled: isFpsEnabled,
-    fps_limit: fps,
-    display_refresh_manual_hz: Number(
-      ss.gamescope_display_refresh_rate ||
-      stores.perfStore?.msgLimits?.display_refresh_manual_hz_max ||
-      60
-    ),
-    is_tdp_limit_enabled: Boolean(ss.steamos_tdp_limit_enabled),
-    tdp_limit: Number(ss.steamos_tdp_limit || 15),
-    is_manual_gpu_clock_enabled: Boolean(ss.steamos_manual_gpu_clock_enabled),
-    manual_gpu_clock_hz: Number(ss.steamos_manual_gpu_clock_hz || 1600),
-  };
-}
-
 let lastToastTime = 0;
 
 function showToast(title: string, body: string) {
@@ -165,10 +139,75 @@ function showToast(title: string, body: string) {
   } catch (_) {}
 }
 
+function showErrorToast(property: string, context: string = "") {
+  const msg = context ? `Property '${property}' not found (${context})` : `Property '${property}' not found`;
+  showToast("PowerShift Error", msg);
+}
+
+// Read current QAM settings dynamically from hardware without unsafe hardcoded fallbacks
+function readCurrentQAMSettings(): PowerProfile | null {
+  const stores = getSteamStores();
+  if (!stores?.settingsStore) {
+    showErrorToast("settingsStore", "Steam UI");
+    return null;
+  }
+
+  const ss = stores.settingsStore;
+  const limits = stores.perfStore?.msgLimits;
+
+  const fps = Number(ss.gamescope_app_target_framerate ?? 0);
+  const isFpsEnabled = ss.gamescope_disable_framelimit !== undefined
+    ? !ss.gamescope_disable_framelimit
+    : (ss.gamescope_enable_app_target_framerate !== undefined ? Boolean(ss.gamescope_enable_app_target_framerate) : fps > 0);
+
+  const refreshHz = ss.gamescope_display_refresh_rate ??
+    limits?.display_refresh_manual_hz_max ??
+    stores.perfStore?.msgState?.display_refresh_rate;
+
+  const isTdpEnabled = Boolean(ss.steamos_tdp_limit_enabled);
+  const tdp = ss.steamos_tdp_limit ??
+    limits?.steamos_tdp_limit_default ??
+    limits?.steamos_tdp_limit_max;
+
+  if (isTdpEnabled && (tdp === undefined || tdp === null)) {
+    showErrorToast("steamos_tdp_limit", "QAM hardware");
+  }
+
+  const isGpuManual = Boolean(ss.steamos_manual_gpu_clock_enabled);
+  const gpuHz = ss.steamos_manual_gpu_clock_hz ??
+    limits?.steamos_manual_gpu_clock_hz_max;
+
+  if (isGpuManual && (gpuHz === undefined || gpuHz === null)) {
+    showErrorToast("steamos_manual_gpu_clock_hz", "QAM hardware");
+  }
+
+  const profile: PowerProfile = {
+    is_fps_limit_enabled: isFpsEnabled,
+    fps_limit: fps,
+    is_tdp_limit_enabled: isTdpEnabled,
+    is_manual_gpu_clock_enabled: isGpuManual,
+  };
+
+  if (refreshHz !== undefined && refreshHz !== null) {
+    profile.display_refresh_manual_hz = Number(refreshHz);
+  }
+  if (tdp !== undefined && tdp !== null) {
+    profile.tdp_limit = Number(tdp);
+  }
+  if (gpuHz !== undefined && gpuHz !== null) {
+    profile.manual_gpu_clock_hz = Number(gpuHz);
+  }
+
+  return profile;
+}
+
 // Apply profile atomically via native clientSettings
 async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: string, isPowerTransition: boolean) {
   const stores = getSteamStores();
-  if (!stores?.setSetting) return;
+  if (!stores?.setSetting) {
+    showErrorToast("setSetting", "Steam UI");
+    return;
+  }
 
   const setSetting = stores.setSetting;
   const fpsLimit = profile.is_fps_limit_enabled === false ? 0 : Number(profile.fps_limit ?? 0);
@@ -184,31 +223,48 @@ async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: s
       setSetting("gamescope_disable_framelimit", true);
     }
 
-    // 2. TDP limit & GPU clock via native clientSettings
-    setSetting("steamos_tdp_limit_enabled", Boolean(profile.is_tdp_limit_enabled));
-    setSetting("steamos_tdp_limit", Number(profile.tdp_limit));
-    if (profile.is_manual_gpu_clock_enabled !== undefined) {
-      setSetting("steamos_manual_gpu_clock_enabled", profile.is_manual_gpu_clock_enabled);
-    }
-    if (profile.manual_gpu_clock_hz !== undefined) {
-      setSetting("steamos_manual_gpu_clock_hz", profile.manual_gpu_clock_hz);
+    // 2. TDP limit: only touch hardware TDP if explicitly enabled with a valid value
+    if (profile.is_tdp_limit_enabled) {
+      if (profile.tdp_limit !== undefined && profile.tdp_limit !== null) {
+        setSetting("steamos_tdp_limit_enabled", true);
+        setSetting("steamos_tdp_limit", Number(profile.tdp_limit));
+      } else {
+        showErrorToast("tdp_limit", "active profile");
+        setSetting("steamos_tdp_limit_enabled", false);
+      }
+    } else if (profile.is_tdp_limit_enabled !== undefined) {
+      setSetting("steamos_tdp_limit_enabled", false);
     }
 
-    // 3. Toast notification: ONLY on true battery/plugged transitions and if enabled in config
+    // 3. GPU clock: only touch hardware GPU clock if explicitly enabled with a valid frequency
+    if (profile.is_manual_gpu_clock_enabled) {
+      if (profile.manual_gpu_clock_hz !== undefined && profile.manual_gpu_clock_hz !== null) {
+        setSetting("steamos_manual_gpu_clock_enabled", true);
+        setSetting("steamos_manual_gpu_clock_hz", Number(profile.manual_gpu_clock_hz));
+      } else {
+        showErrorToast("manual_gpu_clock_hz", "active profile");
+        setSetting("steamos_manual_gpu_clock_enabled", false);
+      }
+    } else if (profile.is_manual_gpu_clock_enabled !== undefined) {
+      setSetting("steamos_manual_gpu_clock_enabled", false);
+    }
+
+    // 4. Toast notification: ONLY on true battery/plugged transitions and if enabled in config
     if (isPowerTransition) {
       const cfg = await call<[], PluginConfig>("get_config").catch(() => null);
       const shouldNotify = cfg ? cfg.show_notifications : configCache.show_notifications;
       if (shouldNotify) {
-        const modeLabel = mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode";
+        const modeLabel = mode === "docked" ? "🖥️ Docked Mode" : (mode === "plugged" ? "⚡ Plugged Mode" : "🔋 Battery Mode");
         const profileLabel = targetKey === "default" ? "Default" : "Per-Game";
-        const tdpText = profile.is_tdp_limit_enabled ? `${profile.tdp_limit}W` : "TDP Auto";
+        const tdpText = profile.is_tdp_limit_enabled && profile.tdp_limit !== undefined ? `${profile.tdp_limit}W` : "TDP Auto";
         const fpsText = fpsLimit > 0 ? `${fpsLimit}FPS` : "Unlimited FPS";
         const details = `${fpsText} | ${tdpText} (${profileLabel})`;
         showToast(`PowerShift: ${modeLabel}`, details);
       }
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error("[PowerShift] Error applying profile:", err);
+    showErrorToast(err?.message || "applyProfile", "runtime error");
   }
 }
 
@@ -334,7 +390,11 @@ const Content: FC = () => {
       </PanelSectionRow>
       <PanelSectionRow>
         <Field label="Power Source">
-          {activeMode === "plugged" ? "⚡ Plugged" : "🔋 On Battery"}
+          {activeMode === "docked"
+            ? "🖥️ Docked (External Display)"
+            : activeMode === "plugged"
+            ? "⚡ Plugged"
+            : "🔋 On Battery"}
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
@@ -345,7 +405,7 @@ const Content: FC = () => {
       <PanelSectionRow>
         <ToggleField
           label="Popup Notifications"
-          description="Display a toast when switching between battery and plugged"
+          description="Display a toast when switching between battery, plugged, and docked"
           checked={showNotifications}
           onChange={handleToggleNotifications}
         />

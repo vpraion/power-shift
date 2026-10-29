@@ -7,6 +7,7 @@ import {
 } from "@decky/ui";
 import { useEffect, useState, FC } from "react";
 import { FaBolt } from "react-icons/fa";
+import packageJson from "../package.json";
 
 interface PowerProfile {
   is_fps_limit_enabled: boolean;
@@ -281,8 +282,22 @@ const Content: FC = () => {
   const [showNotifications, setShowNotifications] = useState(configCache.show_notifications);
   const [activeMode, setActiveMode] = useState<PowerMode>(currentPowerMode);
   const [targetInfo, setTargetInfo] = useState(getProfileTarget());
+  const [newerVersion, setNewerVersion] = useState<string | null>(null);
 
   useEffect(() => {
+    // Check GitHub releases for updates
+    fetch("https://api.github.com/repos/vpraion/power-shift/releases/latest")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.tag_name) {
+          const remoteTag = String(data.tag_name).replace(/^v/, "");
+          if (remoteTag.localeCompare(packageJson.version, undefined, { numeric: true }) > 0) {
+            setNewerVersion(data.tag_name);
+          }
+        }
+      })
+      .catch(() => {});
+
     call<[], PluginConfig>("get_config").then((res: PluginConfig) => {
       if (res) {
         configCache = res;
@@ -306,6 +321,17 @@ const Content: FC = () => {
 
   return (
     <PanelSection title="PowerShift">
+      <PanelSectionRow>
+        <Field label="Version">
+          {newerVersion ? (
+            <span style={{ color: "#a3e635" }}>
+              v{packageJson.version} ({newerVersion} available!)
+            </span>
+          ) : (
+            <span style={{ opacity: 0.7 }}>v{packageJson.version} (Latest)</span>
+          )}
+        </Field>
+      </PanelSectionRow>
       <PanelSectionRow>
         <Field label="Power Source">
           {activeMode === "plugged" ? "⚡ Plugged" : "🔋 On Battery"}

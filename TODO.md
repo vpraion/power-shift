@@ -23,5 +23,5 @@ This document tracks planned improvements and broader hardware compatibility tar
 - [ ] Provide an optional dedicated `docked.json` profile so users can automatically apply custom settings specifically for TV/monitor play (e.g., fixed 60 Hz / max TDP).
 
 ### 4. In-App Release Notifier (Out-of-Store Updates)
-- [ ] Add an unobtrusive version check in the PowerShift panel querying GitHub Releases (`https://api.github.com/repos/vpraion/power-shift/releases/latest`).
+- [x] Add an unobtrusive version check in the PowerShift panel querying GitHub Releases (`https://api.github.com/repos/vpraion/power-shift/releases/latest`).
 - [ ] Display an "Update Available" indicator with a direct link/instructions for users who installed via ZIP or URL outside the official store.

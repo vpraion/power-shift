@@ -1,41 +1,27 @@
-# TODO: Dynamic Hardware Limits & Device Compatibility
+# PowerShift Roadmap & Future Enhancements
 
-Currently, PowerShift uses default fallback ranges based on the **Steam Deck OLED** hardware specifications:
-- **Display Refresh Rate**: 45 Hz - 90 Hz
-- **Framerate Limit**: 30 - 90 FPS (or Unlimited)
-- **TDP Limit**: 3 W - 15 W
+This document tracks planned improvements and broader hardware compatibility targets for **PowerShift**.
 
-## Next Steps for Dynamic Range Discovery
+---
 
-To support other devices seamlessly (such as Steam Deck LCD, ROG Ally, Lenovo Legion Go, AYANEO, etc.):
+## 🎯 High Priority
 
-### 1. Retrieve Ranges from Steam's `PerfStore`
-SteamOS GamepadUI already exposes the hardware limits via the `msgLimits` property of `PerfStore` (`mod83761.Hn.Get()`):
+### 1. Steam Deck LCD & Display Refresh Rate Handling
+- [ ] Confirm power supply sysfs path (`/sys/class/power_supply/ACAD/online`) behaves identically on Steam Deck LCD.
+- [ ] Dynamically query the device's native max refresh rate bounds (`display_refresh_manual_hz_max` from `PerfStore.msgLimits`) rather than using any hardcoded 90 Hz fallback.
 
-```ts
-const stores = getSteamStores();
-const limits = stores?.perfStore?.msgLimits;
+### 2. Multi-Device Power Supply Discovery
+- [ ] Support non-standard AC adapter sysfs names (`ACAD`, `AC`, `ADP1`) for third-party handhelds running SteamOS-like distros (Bazzite, ChimeraOS on ROG Ally, Legion Go, etc.).
+- [ ] Ensure dynamic TDP bounds beyond 15 W (e.g. up to 30 W on Z1 Extreme handhelds) are captured and restored accurately from native QAM.
 
-// Refresh rate bounds
-const minRefreshHz = limits?.display_refresh_manual_hz_min ?? 40;
-const maxRefreshHz = limits?.display_refresh_manual_hz_max ?? 60;
+---
 
-// TDP bounds
-const minTdp = limits?.tdp_limit_min ?? 3;
-const maxTdp = limits?.tdp_limit_max ?? 15;
+## 💡 Planned Features
 
-// Available Framerate limit options (list or object)
-const fpsOptions = limits?.fps_limit_options; 
-// e.g. on OLED: { 0: 22, 1: 45, 2: 90, 3: 0 } (0 represents unlimited)
-// on LCD: { 0: 15, 1: 30, 2: 60, 3: 0 }
-```
+### 3. Dedicated Docked / External Monitor Mode
+- [ ] Detect when the Steam Deck is connected to an external display (docked mode).
+- [ ] Provide an optional dedicated `docked.json` profile so users can automatically apply custom settings specifically for TV/monitor play (e.g., fixed 60 Hz / max TDP).
 
-### 2. Update the UI Components Dynamically
-- Pass `min={minRefreshHz}` and `max={maxRefreshHz}` to the Display Refresh Rate `SliderField`.
-- Pass `min={minTdp}` and `max={maxTdp}` to the TDP `SliderField`.
-- Map the framerate slider or dropdown to the discrete steps provided in `limits.fps_limit_options`.
-
-### 3. Handle External Displays
-When docked or connected to an external monitor:
-- Check `limits.fps_limit_options_external` and `display_external_refresh_manual_hz`.
-- Apply `SetDisplayRefreshRateManualHz(true, hz)` and `SetFPSLimit(true, fps)` when `is_external_display` is detected.
+### 4. In-App Release Notifier (Out-of-Store Updates)
+- [ ] Add an unobtrusive version check in the PowerShift panel querying GitHub Releases (`https://api.github.com/repos/vpraion/power-shift/releases/latest`).
+- [ ] Display an "Update Available" indicator with a direct link/instructions for users who installed via ZIP or URL outside the official store.

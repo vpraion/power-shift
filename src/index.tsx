@@ -128,7 +128,11 @@ function readCurrentQAMSettings(): PowerProfile | null {
   return {
     is_fps_limit_enabled: isFpsEnabled,
     fps_limit: fps,
-    display_refresh_manual_hz: Number(ss.gamescope_display_refresh_rate || 90),
+    display_refresh_manual_hz: Number(
+      ss.gamescope_display_refresh_rate ||
+      stores.perfStore?.msgLimits?.display_refresh_manual_hz_max ||
+      60
+    ),
     is_tdp_limit_enabled: Boolean(ss.steamos_tdp_limit_enabled),
     tdp_limit: Number(ss.steamos_tdp_limit || 15),
     is_manual_gpu_clock_enabled: Boolean(ss.steamos_manual_gpu_clock_enabled),

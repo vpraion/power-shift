@@ -75,6 +75,10 @@ export function readCurrentQAMSettings(): PowerProfile | null {
   return profile;
 }
 
+export function invalidateLastAppliedHash() {
+  lastAppliedHash = "";
+}
+
 // Apply profile atomically via native clientSettings
 export async function applyProfile(profile: PowerProfile, mode: PowerMode, targetKey: string, isPowerTransition: boolean) {
   const stores = getSteamStores();
@@ -142,8 +146,13 @@ export async function applyProfile(profile: PowerProfile, mode: PowerMode, targe
   }
 }
 
-export async function triggerProfileSwitch(newMode: PowerMode, reason: string, isPowerTransition: boolean) {
-  if (isSwitchingProfile) return;
+export async function triggerProfileSwitch(
+  newMode: PowerMode,
+  reason: string,
+  isPowerTransition: boolean,
+  force: boolean = false
+) {
+  if (isSwitchingProfile && !force) return;
   isSwitchingProfile = true;
   isApplyingProfile = true;
   clearTimeout(saveDebounceTimer);
@@ -166,6 +175,7 @@ export async function triggerProfileSwitch(newMode: PowerMode, reason: string, i
       const current = readCurrentQAMSettings();
       if (current) {
         await call("save_profile", target.key, newMode, current);
+        await applyProfile(current, newMode, target.key, isPowerTransition);
       }
     }
   } catch (err) {
